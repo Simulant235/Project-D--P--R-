@@ -1,0 +1,19 @@
+#pragma once
+#define IDI_APP       1
+#define IDI_ERROR_    10
+#define IDI_WARNING_  11
+#define IDI_SUCCESS   12
+#define IDI_ABOUT     13
+#define IDI_UNINSTALL 14
+#define IDP_GAME_1ST    100
+#define IDP_GAME_2ND    101
+#define IDP_GAME_EXTEND 102
+#define IDP_LOADING     103
+#define IDP_WARNING     104
+#define IDP_SUCCESS     105
+#define IDP_ERROR       106
+#define IDP_GAME_1ST_W    110
+#define IDP_GAME_2ND_W    111
+#define IDP_GAME_EXTEND_W 112
+#define IDP_LOADING_W     113
+#define IDP_WARNING_W     114

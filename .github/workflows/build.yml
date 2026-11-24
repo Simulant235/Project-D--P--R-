@@ -1,0 +1,19 @@
+# Recompiler + Runtime bauen, Tests (T40); ohne game/ und generated/ keine Spiel-.exe, ohne SDL3
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Konfigurieren
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+      - name: Bauen
+        run: cmake --build build --config Release -- -m
+      - name: Tests
+        run: ctest --test-dir build -C Release --output-on-failure

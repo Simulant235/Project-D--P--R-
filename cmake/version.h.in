@@ -1,0 +1,2 @@
+#pragma once
+#define DIVA_RECOMP_VERSION "@PROJECT_VERSION@"

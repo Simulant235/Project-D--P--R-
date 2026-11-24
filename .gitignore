@@ -1,0 +1,31 @@
+# Spieldateien niemals einchecken
+game/
+*.iso
+*.cso
+EBOOT.BIN
+BOOT.BIN
+*.prx
+# Generierter Code aus dem Spiel (urheberrechtlich geschützt)
+generated/
+# Build
+build/
+out/
+*.exe
+*.dll
+*.pdb
+*.obj
+.vs/
+# Ghidra-Projekte
+*.gpr
+*.rep/
+
+# Fremdquellen (nicht einchecken)
+third_party/ppsspp/
+saves/
+build-dev/
+third_party/SDL3/
+
+# Mitgelieferter Compiler, Setup-Ausgabe
+tools/llvm-mingw*/
+dist/
+build-*/

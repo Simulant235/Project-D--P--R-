@@ -1,0 +1,12 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.iso binary
+*.cso binary
+*.bin binary
+*.BIN binary
+*.prx binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.dll binary

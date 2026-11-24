@@ -1,0 +1,49 @@
+# Hatsune Miku -Project DIVA- (1st); nur Kennungen, Prüfsummen, Adressen, keine Spieldaten
+
+[game]
+id           = "diva1st"
+title        = "Hatsune Miku: Project DIVA"
+disc_id      = "ULJM05472"
+disc_version = "1.01"
+
+[game.executable]
+path      = "PSP_GAME/SYSDIR/EBOOT.BIN"   # in der ISO; verschlüsselt -> --eboot
+format    = "elf-exec"                    # feste Adresse, keine Relocations
+module    = "PdvApp"
+load_addr = 0x08804000
+elf_size  = 3728994                       # ELF ohne Padding
+elf_sha1  = "27a189b19cca8f44915d82d2fc33dca041389774"
+
+# bekannte ISO-Varianten (nur Hinweis)
+[[game.iso]]
+note  = "EBOOT.BIN in der ISO entschlüsselt"
+size  = 1402929152
+crc32 = "510a818a"
+md5   = "75928939a349efb7d282208641fc3907"
+sha1  = "49143615decda27e69512dd7a16cea2fa8bdbe11"
+
+[memory]
+user_ram_size   = 0x01800000   # 24 MiB ab 0x08800000
+host_stack_size = 0x00100000   # 1 MiB Host-Stack je PSP-Thread
+
+[recompiler]
+safepoints         = true
+functions_per_file = 500
+
+[runtime]
+vblank_hz = 59.94
+exe_name  = "diva1st"
+
+# statische C++-Initialisierer: Metrowerks legt den Code in den Datenbereich vor die Tabelle (11 Zeiger ab 0x08B778BC);
+# ohne den Bereich "unknown target 0x08B73BA8" beim Start. Recompiler warnt bei weiterem solchem Code
+[[code_range]]
+start  = 0x08B73BA8
+end    = 0x08B778BC
+reason = "statische Initialisierer im Datenbereich"
+
+# Metrowerks-Exception-Resume: stellt Register + sp her, springt in einen catch-Block, nicht als C übersetzbar
+# normal nicht erreicht, sonst Runtime-Meldung (Exit-Code 75)
+[[hook]]
+addr   = 0x08806984
+symbol = "psp_rt_cxx_exception_resume"
+reason = "Sprung in einen catch-Block mit wiederhergestelltem Stack, nicht als C-Funktion übersetzbar"
