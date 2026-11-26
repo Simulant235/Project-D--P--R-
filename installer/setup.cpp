@@ -39,12 +39,12 @@ const wchar_t* const UNINSTALL_KEY = L"Software\\Microsoft\\Windows\\CurrentVers
 bool g_en = false;
 const wchar_t* T(const wchar_t* de, const wchar_t* en) { return g_en ? en : de; }
 
-HWND g_wnd, g_text, g_status, g_progress, g_ck_desktop, g_btn_ok, g_btn_cancel;
+HWND g_wnd, g_text, g_status, g_progress, g_ck_desktop, g_btn_ok, g_btn_cancel, g_btn_de, g_btn_en;
 HFONT g_font, g_font_big;
 std::atomic<bool> g_running{false};
 bool g_done = false;
 const UINT WM_STATUS = WM_APP + 1, WM_FINISHED = WM_APP + 2;
-enum { ID_OK = 100, ID_CANCEL, ID_DESKTOP };
+enum { ID_OK = 100, ID_CANCEL, ID_DESKTOP, ID_DE, ID_EN };
 
 fs::path known_folder(REFKNOWNFOLDERID id) {
     PWSTR p = nullptr;
@@ -162,6 +162,21 @@ std::wstring install(bool desktop) {
         return T(L"Das Entpacken ist fehlgeschlagen (tar.exe, Code ", L"Unpacking failed (tar.exe, code ") + std::to_wstring(rc) +
                T(L"). Windows 10 Version 1803 oder neuer wird benötigt.", L"). Windows 10 version 1803 or newer is required.");
     // Links + Apps-Eintrag
+    {   // Sprache aus dem Setup für den Launcher übernehmen
+        const fs::path ini = dir / L"config" / L"launcher.ini";
+        fs::create_directories(ini.parent_path(), ec);
+        std::string all, line;
+        bool done = false;
+        {
+            std::ifstream in(ini);
+            while (std::getline(in, line)) {
+                if (line.rfind("lang", 0) == 0) { line = std::string("lang = ") + (g_en ? "en" : "de"); done = true; }
+                all += line + "\n";
+            }
+        }
+        if (!done) all += std::string("lang = ") + (g_en ? "en" : "de") + "\n";
+        std::ofstream(ini) << all;
+    }
     post_status(T(L"Verknüpfungen anlegen …", L"Creating shortcuts …"));
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const fs::path exe = dir / L"DIVA Launcher.exe";
@@ -190,6 +205,26 @@ HWND mk(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int 
     return c;
 }
 
+std::wstring setup_text() {
+    return T(L"Installiert nach:\n", L"Installs to:\n") + install_dir().wstring() +
+           T(L"\n\nKeine Admin-Rechte nötig, etwa 1 GB Speicherplatz. Spiele, Spielstände und Einstellungen einer früheren "
+             L"Installation bleiben erhalten. Spieldateien sind nicht enthalten: Du brauchst deine eigene ISO.",
+             L"\n\nNo admin rights needed, about 1 GB of disk space. Games, save data and settings of an earlier installation "
+             L"are kept. No game files are included: you need your own ISO.");
+}
+
+// Sprache umschalten: alle Texte neu setzen, gewählte Sprache als gedrückter (gesperrter) Knopf
+void set_lang(bool en) {
+    g_en = en;
+    SetWindowTextW(g_text, setup_text().c_str());
+    SetWindowTextW(g_ck_desktop, T(L"Verknüpfung auf dem Desktop anlegen", L"Create a desktop shortcut"));
+    SetWindowTextW(g_btn_ok, g_done ? T(L"Launcher starten", L"Start launcher") : T(L"Installieren", L"Install"));
+    SetWindowTextW(g_btn_cancel, g_done ? T(L"Schließen", L"Close") : T(L"Abbrechen", L"Cancel"));
+    if (g_done) SetWindowTextW(g_status, T(L"Fertig! DIVA PSP Recomp ist installiert.", L"Done! DIVA PSP Recomp is installed."));
+    EnableWindow(g_btn_de, en);
+    EnableWindow(g_btn_en, !en);
+}
+
 void start_install() {
     if (g_running.exchange(true)) return;
     EnableWindow(g_btn_ok, FALSE);
@@ -214,7 +249,9 @@ LRESULT CALLBACK wnd_proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
                 ShellExecuteW(w, L"open", (install_dir() / L"DIVA Launcher.exe").c_str(), nullptr, install_dir().c_str(), SW_SHOWNORMAL);
                 DestroyWindow(w);
             }
-        } else if (LOWORD(wp) == ID_CANCEL) DestroyWindow(w);
+        } else if (LOWORD(wp) == ID_DE) set_lang(false);
+        else if (LOWORD(wp) == ID_EN) set_lang(true);
+        else if (LOWORD(wp) == ID_CANCEL) DestroyWindow(w);
         return 0;
     case WM_STATUS: {
         std::unique_ptr<std::wstring> s((std::wstring*)lp);
@@ -291,13 +328,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     g_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     g_font_big = CreateFontW(-24, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
     mk(L"STATIC", (L"DIVA PSP Recomp " + std::wstring(VERSION)).c_str(), 0, 24, 18, 510, 34, 0, g_font_big);
-    const std::wstring text =
-        T(L"Installiert nach:\n", L"Installs to:\n") + install_dir().wstring() +
-        T(L"\n\nKeine Admin-Rechte nötig, etwa 1 GB Speicherplatz. Spiele, Spielstände und Einstellungen einer früheren "
-          L"Installation bleiben erhalten. Spieldateien sind nicht enthalten: Du brauchst deine eigene ISO.",
-          L"\n\nNo admin rights needed, about 1 GB of disk space. Games, save data and settings of an earlier installation "
-          L"are kept. No game files are included: you need your own ISO.");
+    const std::wstring text = setup_text();
     g_text = mk(L"STATIC", text.c_str(), 0, 24, 62, 510, 130, 0, g_font);
+    g_btn_de = mk(L"BUTTON", L"DE", WS_TABSTOP, 444, 20, 44, 28, ID_DE, g_font);   // Sprache oben rechts
+    g_btn_en = mk(L"BUTTON", L"EN", WS_TABSTOP, 492, 20, 44, 28, ID_EN, g_font);
+    EnableWindow(g_btn_de, g_en);
+    EnableWindow(g_btn_en, !g_en);
     g_ck_desktop = mk(L"BUTTON", T(L"Verknüpfung auf dem Desktop anlegen", L"Create a desktop shortcut"), BS_AUTOCHECKBOX | WS_TABSTOP, 24, 196,
                       400, 24, ID_DESKTOP, g_font);
     SendMessageW(g_ck_desktop, BM_SETCHECK, BST_CHECKED, 0);

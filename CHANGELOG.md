@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.1-alpha.1]
+
+- Setup: Sprache oben rechts wählbar (DE/EN), gilt auch gleich für Launcher und Spiel
+
 ## [0.1.0-alpha.1]
 
 Erste Alpha.
