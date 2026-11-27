@@ -8,12 +8,12 @@
 static void usage() {
     fprintf(stderr,
             "diva_recomp --game <games/spiel.toml> --eboot <entschluesselte EBOOT.BIN> --out <ordner>\n"
-            "            [--analysis <ordner mit functions.json>] [--runtime-include <ordner>] [--check-only]\n");
+            "            [--analysis <ordner mit functions.json>] [--runtime-include <ordner>] [--check-only] [--ignore-hash]\n");
 }
 
 int main(int argc, char** argv) {
     std::string game, eboot, out, analysis, rt_include;
-    bool check_only = false;
+    bool check_only = false, ignore_hash = false;
     for (int i = 1; i < argc; i++) {
         auto arg = [&](const char* name, std::string& dst) {
             if (strcmp(argv[i], name) != 0) return false;
@@ -25,6 +25,7 @@ int main(int argc, char** argv) {
             arg("--runtime-include", rt_include))
             continue;
         if (strcmp(argv[i], "--check-only") == 0) { check_only = true; continue; }
+        if (strcmp(argv[i], "--ignore-hash") == 0) { ignore_hash = true; continue; }
         fprintf(stderr, "unbekannter Parameter: %s\n", argv[i]);
         usage();
         return EXIT_USAGE;
@@ -41,7 +42,10 @@ int main(int argc, char** argv) {
 
         std::vector<u8> file = read_file(eboot);
         Module m = load_module(file, cfg.load_addr, cfg.elf_size);
-        if (m.sha1 != cfg.elf_sha1)
+        if (m.sha1 != cfg.elf_sha1 && ignore_hash)   // Bastler-Schalter im Launcher
+            fprintf(stderr, "WARNUNG: unbekannte Fassung (SHA-1 %s, erwartet %s), wird trotzdem uebersetzt\n", m.sha1.c_str(),
+                    cfg.elf_sha1.c_str());
+        else if (m.sha1 != cfg.elf_sha1)
             throw RecompError(EXIT_WRONG_HASH, strf("EBOOT passt nicht zur Konfiguration: SHA-1 %s, erwartet %s", m.sha1.c_str(),
                                                     cfg.elf_sha1.c_str()));
         if (cfg.exe_format == "elf-exec" && m.load_addr != cfg.load_addr)

@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.0-alpha.1]
+
+- Einstellungen aufgebaut wie im Hauptprojekt: Renderer, Auflösung, Bilder pro Sekunde und xBRZ schon sichtbar, aber noch "(bald)"
+- Design des Launchers wählbar (wie Windows, hell, dunkel)
+- Schalter "Unbekannte Fassung trotzdem bauen (auf eigenes Risiko)": nur nach Eintippen von RISIKO / RISK, Recompiler mit --ignore-hash
+
 ## [0.1.3-alpha.1]
 
 - Spiel startete nicht (Code 12), wenn vorher eine andere Fassung angefangen wurde: alte EBOOT aus PPSSPP wird jetzt entfernt, abgebrochene Installationen hinterlassen keine Reste

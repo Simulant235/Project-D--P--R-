@@ -279,6 +279,8 @@ void fill_uninstall_list();
 bool g_xbrz_touched = false;   // xBRZ von Hand umgeschaltet
 HFONT g_font, g_font_big, g_font_tile;
 std::atomic<bool> g_busy{false};
+std::atomic<bool> g_unknown_ok{false};   // Bastler-Schalter, gilt für den laufenden Bau
+HWND g_ck_unknown;
 const UINT WM_STATUS = WM_APP + 1, WM_BUILD_DONE = WM_APP + 2, WM_GAME_FAILED = WM_APP + 3, WM_UPDATE_FOUND = WM_APP + 4,
            WM_UPDATE_DONE = WM_APP + 5, WM_GAME_CRASHED = WM_APP + 6;
 
@@ -424,6 +426,7 @@ void show_page(bool settings) {
         const std::wstring t = g_state[L"theme"];
         SendMessageW(g_cb_theme, CB_SETCURSEL, t == L"light" ? 1 : t == L"dark" ? 2 : 0, 0);
         SendMessageW(g_cb_lang, CB_SETCURSEL, g_en ? 1 : 0, 0);
+        SendMessageW(g_ck_unknown, BM_SETCHECK, g_state[L"unknown_version"] == L"1", 0);
     }
 }
 
@@ -537,12 +540,14 @@ std::wstring build_game(int gi, const fs::path& src_iso) {
     fs::path toml;
     for (const fs::path& c : game_tomls(gi))
         if (run_logged(q(L.recomp) + L" --game " + q(c) + L" --eboot " + q(eboot) + L" --check-only", work, log) == 0) { toml = c; break; }
+    const bool unknown = toml.empty() && g_unknown_ok;   // auf eigenes Risiko: mit der Standard-Konfiguration
+    if (unknown) toml = game_tomls(gi)[0];
     if (toml.empty())
         return T(L"Diese Fassung des Spiels wird noch nicht unterstützt (unbekanntes Programm, z.B. andere Version oder anderer Patch).",
                  L"This version of the game is not supported yet (unknown program, e.g. a different version or patch).") + see_log;
     post_status(T(L"2/4  Spielcode übersetzen (Recompiler) ...", L"2/4  Translating the game code (recompiler) ..."));
     const fs::path gen = work / L"generated" / g.exe;
-    if (run_logged(q(L.recomp) + L" --game " + q(toml) + L" --eboot " + q(eboot) + L" --out " + q(gen), work, log) != 0)
+    if (run_logged(q(L.recomp) + L" --game " + q(toml) + L" --eboot " + q(eboot) + L" --out " + q(gen) + (unknown ? L" --ignore-hash" : L""), work, log) != 0)
         return T(L"Der Recompiler ist fehlgeschlagen.", L"The recompiler failed.") + see_log;
     post_status(T(L"3/4  Bauen vorbereiten (CMake) ...", L"3/4  Preparing the build (CMake) ..."));
     const fs::path bdir = work / L"build";
@@ -574,6 +579,7 @@ std::wstring build_game(int gi, const fs::path& src_iso) {
 
 void start_build(int gi, const fs::path& iso) {
     g_busy = true;
+    g_unknown_ok = g_state[L"unknown_version"] == L"1";
     refresh_tiles();
     SendMessageW(g_progress, PBM_SETMARQUEE, TRUE, 30);
     ShowWindow(g_progress, SW_SHOW);
@@ -1479,6 +1485,127 @@ void rebuild_outdated() {
     }
 }
 
+// ---------------------------------------------------------------- Warnung zum Bastler-Schalter
+// Bestätigen erst nach Eintippen von RISIKO / RISK, Knopf dann rot
+struct RiskDlg { HWND edit, ok; bool armed, yes, done; HFONT head; HBRUSH edit_bg; };
+RiskDlg g_risk;
+
+LRESULT CALLBACK risk_proc(HWND w, UINT um, WPARAM wp, LPARAM lp) {
+    RiskDlg& d = g_risk;
+    switch (um) {
+    case WM_COMMAND:
+        if (LOWORD(wp) == 3 && HIWORD(wp) == EN_CHANGE) {
+            wchar_t b[32] = {};
+            GetWindowTextW(d.edit, b, 32);
+            d.armed = _wcsicmp(b, T(L"RISIKO", L"RISK")) == 0;
+            EnableWindow(d.ok, d.armed);
+            InvalidateRect(d.ok, nullptr, TRUE);
+        } else if (LOWORD(wp) == IDOK && d.armed) { d.yes = true; DestroyWindow(w); }
+        else if (LOWORD(wp) == IDCANCEL) DestroyWindow(w);
+        return 0;
+    case WM_DRAWITEM: {   // grau, bis das Wort stimmt, dann rot
+        auto* di = (DRAWITEMSTRUCT*)lp;
+        const bool down = di->itemState & ODS_SELECTED;
+        const COLORREF bg = !d.armed ? (g_dark ? RGB(70, 70, 70) : RGB(204, 204, 204)) : down ? RGB(150, 25, 15) : RGB(196, 43, 28);
+        HBRUSH br = CreateSolidBrush(bg);
+        FillRect(di->hDC, &di->rcItem, br);
+        DeleteObject(br);
+        SetBkMode(di->hDC, TRANSPARENT);
+        SetTextColor(di->hDC, d.armed ? RGB(255, 255, 255) : RGB(130, 130, 130));
+        SelectObject(di->hDC, g_font);
+        wchar_t t[64];
+        GetWindowTextW(di->hwndItem, t, 64);
+        DrawTextW(di->hDC, t, -1, &di->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        if (d.armed && (di->itemState & ODS_FOCUS)) { RECT f = di->rcItem; InflateRect(&f, -3, -3); DrawFocusRect(di->hDC, &f); }
+        return TRUE;
+    }
+    case WM_CTLCOLOREDIT:
+        SetTextColor((HDC)wp, g_fg);
+        SetBkColor((HDC)wp, g_dark ? RGB(45, 45, 45) : RGB(255, 255, 255));
+        return (LRESULT)d.edit_bg;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+        SetBkMode((HDC)wp, TRANSPARENT);
+        SetTextColor((HDC)wp, g_fg);
+        return (LRESULT)g_bg_brush;
+    case WM_ERASEBKGND: {
+        RECT rc;
+        GetClientRect(w, &rc);
+        FillRect((HDC)wp, &rc, g_bg_brush);
+        return 1;
+    }
+    case WM_CLOSE: DestroyWindow(w); return 0;
+    case WM_DESTROY: d.done = true; return 0;
+    }
+    return DefWindowProcW(w, um, wp, lp);
+}
+
+bool risk_dialog() {
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = risk_proc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"DivaRisk";
+        RegisterClassW(&wc);
+        reg = true;
+    }
+    RiskDlg& d = g_risk;
+    d = {};
+    d.head = CreateFontW(-22, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+    d.edit_bg = CreateSolidBrush(g_dark ? RGB(45, 45, 45) : RGB(255, 255, 255));
+    const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    RECT r = {0, 0, 580, 350};
+    AdjustWindowRect(&r, style, FALSE);
+    RECT o;
+    GetWindowRect(g_wnd, &o);
+    const int ww = r.right - r.left, wh = r.bottom - r.top;
+    HWND w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"DivaRisk", T(L"Achtung", L"Attention"), style, (o.left + o.right - ww) / 2,
+                             (o.top + o.bottom - wh) / 2, ww, wh, g_wnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    const BOOL dark = g_dark;
+    DwmSetWindowAttribute(w, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
+    auto ctl = [&](const wchar_t* cls, const wchar_t* text, DWORD st, int x, int y, int cw, int ch, int id, HFONT f) {
+        HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | st, x, y, cw, ch, w, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(c, WM_SETFONT, (WPARAM)f, TRUE);
+        return c;
+    };
+    HWND icon = ctl(L"STATIC", L"", SS_ICON, 20, 22, 32, 32, 0, g_font);
+    SendMessageW(icon, STM_SETICON, (WPARAM)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_WARNING_), IMAGE_ICON, 32, 32, 0), 0);
+    ctl(L"STATIC", T(L"AUF EIGENES RISIKO", L"AT YOUR OWN RISK"), 0, 68, 22, 490, 32, 0, d.head);
+    ctl(L"STATIC", T(L"Damit baut der Launcher auch eine Fassung des Spiels, die er nicht kennt (andere Version, Region oder "
+                     L"anderer Patch). Das ist nur für Bastler gedacht.\n\n"
+                     L"Mögliche Folgen: Das Spiel stürzt ab, verhält sich falsch oder beschädigt deine Spielstände. "
+                     L"Bitte melde Fehler nur mit einer unterstützten Fassung.\n\n"
+                     L"Sichere vorher deine Spielstände. Zum Einschalten tippe RISIKO ein:",
+                     L"With this, the launcher also builds a version of the game it doesn't know (a different version, region "
+                     L"or patch). This is only meant for tinkerers.\n\n"
+                     L"What can happen: the game crashes, behaves wrongly or damages your save data. "
+                     L"Please only report bugs with a supported version.\n\n"
+                     L"Back up your save data first. To turn it on, type RISK:"),
+        0, 68, 62, 490, 176, 0, g_font);
+    d.edit = ctl(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 68, 244, 220, 28, 3, g_font);
+    d.ok = ctl(L"BUTTON", T(L"Ja, auf eigenes Risiko", L"Yes, at my own risk"), BS_OWNERDRAW | WS_TABSTOP | WS_DISABLED, 68, 296, 220, 36, IDOK, g_font);
+    HWND cancel = ctl(L"BUTTON", T(L"Abbrechen", L"Cancel"), WS_TABSTOP, 438, 296, 120, 36, IDCANCEL, g_font);
+    if (g_dark) {
+        SetWindowTheme(cancel, L"DarkMode_Explorer", nullptr);
+        SetWindowTheme(d.edit, L"DarkMode_CFD", nullptr);
+    }
+    EnableWindow(g_wnd, FALSE);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(d.edit);
+    MSG m;
+    while (!d.done) {
+        if (GetMessageW(&m, nullptr, 0, 0) <= 0) { PostQuitMessage((int)m.wParam); break; }
+        if (!IsDialogMessageW(w, &m)) { TranslateMessage(&m); DispatchMessageW(&m); }
+    }
+    EnableWindow(g_wnd, TRUE);
+    SetForegroundWindow(g_wnd);
+    DeleteObject(d.head);
+    DeleteObject(d.edit_bg);
+    return d.yes;
+}
+
 // ---------------------------------------------------------------- Aufbau
 HWND mk(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font, std::vector<HWND>* page) {
     HWND c = CreateWindowExW(0, cls, text, WS_CHILD | style, x, y, w, h, g_wnd, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
@@ -1496,7 +1623,7 @@ HWND mk_combo(const wchar_t* label, int y, const wchar_t* const* items, int n, i
 
 enum { ID_TILE = 100, ID_SETTINGS = 200, ID_SAVES, ID_REPORT, ID_ABOUT, ID_SAVE, ID_BACK, ID_XBRZ, ID_SCALE, ID_XBRZ_LVL,
        ID_UNINST_GAME, ID_DEL_SAVES, ID_UNINST_ALL, ID_THEME, ID_XBRZ_LABEL, ID_TESTS, ID_TEST_A, ID_TEST_B, ID_TEST_C,
-       ID_TEST_RUN, ID_TEST_BACK, ID_LANG, ID_LAT, ID_LAT_LABEL, ID_LAT_RESET };
+       ID_TEST_RUN, ID_TEST_BACK, ID_LANG, ID_LAT, ID_LAT_LABEL, ID_LAT_RESET, ID_UNKNOWN, ID_UNKNOWN_LABEL, ID_SOON_R, ID_SOON_S, ID_SOON_F };
 
 // Steuerelemente anlegen (auch nach Sprachwechsel, vorher destroy_ui)
 void build_ui() {
@@ -1522,13 +1649,29 @@ void build_ui() {
     g_btn_settings = mk(L"BUTTON", T(L"Einstellungen", L"Settings"), WS_VISIBLE | WS_TABSTOP, 200, 410, 170, 36, ID_SETTINGS, g_font, &g_main_ctl);
     g_btn_report = mk(L"BUTTON", T(L"Fehler melden", L"Report a bug"), WS_VISIBLE | WS_TABSTOP, 390, 410, 170, 36, ID_REPORT, g_font, &g_main_ctl);
 
-    // Seite Einstellungen
-    mk(L"STATIC", T(L"Einstellungen", L"Settings"), 0, 30, 75, 600, 30, 0, g_font_tile, &g_set_ctl);
+    // Seite Einstellungen (wie im Hauptprojekt; Grafik kommt erst per Update)
+    mk(L"STATIC", T(L"Einstellungen (gelten für alle Spiele)", L"Settings (apply to all games)"), 0, 30, 75, 600, 30, 0, g_font_tile, &g_set_ctl);
+    // "(bald)": Liste lässt sich aufklappen, die Auswahl springt aber zurück (ID_SOON_*)
+    const wchar_t* renderers[] = {T(L"Software (CPU, GDI)", L"Software (CPU, GDI)"), T(L"Direct3D 11 (Grafikkarte)", L"Direct3D 11 (graphics card)"),
+                                  T(L"Vulkan", L"Vulkan")};
+    SendMessageW(mk_combo(T(L"Renderer (bald)", L"Renderer (soon)"), 110, renderers, 3, ID_SOON_R), CB_SETCURSEL, 0, 0);
+    const wchar_t* scales[] = {L"1×  480×272 (Original)", L"2×  960×544", L"3×  1440×816", L"4×  1920×1088 (1080p)", L"6×  2880×1632 (1440p)",
+                               L"8×  3840×2176 (4K)"};
+    SendMessageW(mk_combo(T(L"Auflösung (intern) (bald)", L"Resolution (internal) (soon)"), 142, scales, 6, ID_SOON_S), CB_SETCURSEL, 0, 0);
+    const wchar_t* fps_names[] = {L"30 (Original)", L"60", L"120", L"240"};
+    SendMessageW(mk_combo(T(L"Bilder pro Sekunde (bald)", L"Frames per second (soon)"), 174, fps_names, 4, ID_SOON_F), CB_SETCURSEL, 0, 0);
+    mk(L"BUTTON", L"", BS_CHECKBOX | WS_DISABLED, 40, 210, 18, 24, 0, g_font, &g_set_ctl);
+    mk(L"STATIC", T(L"Texturfilter xBRZ (bald)", L"Texture filter xBRZ (soon)"), 0, 62, 212, 186, 24, 0, g_font, &g_set_ctl);
+    const wchar_t* themes[] = {T(L"Wie Windows", L"Like Windows"), T(L"Hell", L"Light"), T(L"Dunkel", L"Dark")};
+    g_cb_theme = mk_combo(T(L"Design (Launcher)", L"Theme (launcher)"), 238, themes, 3, ID_THEME);
     const wchar_t* langs[] = {L"Deutsch", L"English"};
-    g_cb_lang = mk_combo(T(L"Sprache", L"Language"), 110, langs, 2, ID_LANG);
-    mk(L"STATIC", T(L"Deinstallieren", L"Uninstall"), 0, 40, 168, 200, 24, 0, g_font, &g_set_ctl);
-    g_btn_uninst_game = mk(L"BUTTON", T(L"Spiel deinstallieren", L"Uninstall game"), WS_TABSTOP, 250, 162, 200, 36, ID_UNINST_GAME, g_font, &g_set_ctl);
-    g_btn_uninst_all = mk(L"BUTTON", T(L"Alles deinstallieren", L"Uninstall everything"), WS_TABSTOP, 470, 162, 200, 36, ID_UNINST_ALL, g_font, &g_set_ctl);
+    g_cb_lang = mk_combo(T(L"Sprache", L"Language"), 270, langs, 2, ID_LANG);
+    g_ck_unknown = mk(L"BUTTON", L"", BS_CHECKBOX | WS_TABSTOP, 40, 308, 18, 24, ID_UNKNOWN, g_font, &g_set_ctl);
+    mk(L"STATIC", T(L"Unbekannte Fassung trotzdem bauen (auf eigenes Risiko)", L"Build an unknown version anyway (at your own risk)"),
+       SS_NOTIFY, 62, 310, 600, 24, ID_UNKNOWN_LABEL, g_font, &g_set_ctl);
+    mk(L"STATIC", T(L"Deinstallieren", L"Uninstall"), 0, 30, 338, 300, 26, 0, g_font_tile, &g_set_ctl);
+    g_btn_uninst_game = mk(L"BUTTON", T(L"Spiel deinstallieren", L"Uninstall game"), WS_TABSTOP, 40, 370, 220, 30, ID_UNINST_GAME, g_font, &g_set_ctl);
+    g_btn_uninst_all = mk(L"BUTTON", T(L"Alles deinstallieren", L"Uninstall everything"), WS_TABSTOP, 270, 370, 220, 30, ID_UNINST_ALL, g_font, &g_set_ctl);
     g_btn_save = mk(L"BUTTON", T(L"Speichern", L"Save"), WS_TABSTOP | BS_DEFPUSHBUTTON, 30, 416, 160, 36, ID_SAVE, g_font, &g_set_ctl);
     g_btn_back = mk(L"BUTTON", T(L"Zurück", L"Back"), WS_TABSTOP, 210, 416, 160, 36, ID_BACK, g_font, &g_set_ctl);
     // Testseite nur im Entwickler-Build
@@ -1682,6 +1825,14 @@ LRESULT CALLBACK wnd_proc(HWND w, UINT um, WPARAM wp, LPARAM lp) {
         } else if (id == ID_XBRZ_LABEL && HIWORD(wp) == STN_CLICKED) {
             SendMessageW(g_ck_xbrz, BM_SETCHECK, SendMessageW(g_ck_xbrz, BM_GETCHECK, 0, 0) == BST_CHECKED ? BST_UNCHECKED : BST_CHECKED, 0);
             SendMessageW(g_wnd, WM_COMMAND, MAKEWPARAM(ID_XBRZ, BN_CLICKED), (LPARAM)g_ck_xbrz);
+        }
+        else if (id >= ID_SOON_R && id <= ID_SOON_F && HIWORD(wp) == CBN_SELCHANGE)   // "(bald)": bleibt beim Ist-Zustand
+            SendMessageW((HWND)lp, CB_SETCURSEL, 0, 0);
+        else if (id == ID_UNKNOWN || (id == ID_UNKNOWN_LABEL && HIWORD(wp) == STN_CLICKED)) {   // Bastler-Schalter
+            const bool on = g_state[L"unknown_version"] != L"1" && risk_dialog();
+            if (on) g_state[L"unknown_version"] = L"1"; else g_state.erase(L"unknown_version");
+            save_state();
+            SendMessageW(g_ck_unknown, BM_SETCHECK, on, 0);
         }
         else if (id == ID_TESTS) show_test_page(true);
         else if (id == ID_TEST_BACK) show_test_page(false);
