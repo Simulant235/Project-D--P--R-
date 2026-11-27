@@ -522,7 +522,10 @@ std::wstring build_game(int gi, const fs::path& src_iso) {
     post_status(T(L"1/4  Programm aus der ISO lesen ...", L"1/4  Reading the program from the ISO ..."));
     fs::path eboot = work / L"EBOOT.BIN";
     if (!iso_extract(iso, "PSP_GAME/SYSDIR/EBOOT.BIN", eboot)) return T(L"EBOOT.BIN konnte nicht aus der ISO gelesen werden.", L"EBOOT.BIN could not be read from the ISO.");
-    if (!is_elf(eboot)) {   // verschlüsselt -> EBOOT aus PPSSPP
+    if (is_elf(eboot)) {   // unverschlüsselt in der ISO: eine alte EBOOT aus PPSSPP würde beim Spielen falsch mitgegeben
+        std::error_code e2;
+        fs::remove(dumped_eboot(gi), e2);
+    } else {   // verschlüsselt -> EBOOT aus PPSSPP
         eboot = dumped_eboot(gi);
         if (!is_elf(eboot))
             return T(L"Das Programm in der ISO ist verschlüsselt und die entschlüsselte EBOOT.BIN (aus PPSSPP) fehlt.\n"
@@ -1776,6 +1779,7 @@ LRESULT CALLBACK wnd_proc(HWND w, UINT um, WPARAM wp, LPARAM lp) {
         } else {
             SetWindowTextW(g_status, T(L"Installation fehlgeschlagen.", L"Installation failed."));
             msg(*err, L"Installation", IDI_ERROR_);
+            if (!game_ready((int)wp)) remove_dir(game_dir((int)wp));   // keine Reste (ISO-Kopie, EBOOT) eines abgebrochenen Baus
         }
         const bool ok = err->empty();
         delete err;

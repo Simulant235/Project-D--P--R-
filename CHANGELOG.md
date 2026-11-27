@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.3-alpha.1]
+
+- Spiel startete nicht (Code 12), wenn vorher eine andere Fassung angefangen wurde: alte EBOOT aus PPSSPP wird jetzt entfernt, abgebrochene Installationen hinterlassen keine Reste
+
 ## [0.1.2-alpha.1]
 
 - Japanische Originalfassung von 1st (ohne Fan-Patch) wird jetzt erkannt und gebaut
