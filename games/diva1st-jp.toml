@@ -1,0 +1,46 @@
+# Spielkonfiguration: Hatsune Miku -Project DIVA- (1st), japanisches Original ohne Fan-Patch.
+# Programmcode identisch mit diva1st.toml (englischer Fan-Patch ändert nur Daten), andere Prüfsumme.
+# Format: docs/interfaces.md, Abschnitt "Spielkonfiguration". Herkunft der Werte: docs/analysis/iso.md und eboot.md.
+# Diese Datei enthält keine Spieldaten, nur Kennungen, Prüfsummen und Adressen.
+
+[game]
+id           = "diva1st"
+title        = "Hatsune Miku: Project DIVA"
+disc_id      = "ULJM05472"
+disc_version = "1.01"
+
+[game.executable]
+path      = "PSP_GAME/SYSDIR/EBOOT.BIN"   # in der ISO; ist sie dort verschlüsselt, per --eboot liefern
+format    = "elf-exec"                    # feste Adresse, keine Relocations
+module    = "PdvApp"
+load_addr = 0x08804000
+elf_size  = 3728994                       # Länge des ELF ohne Auffüllung
+elf_sha1  = "262fb75bf624c5d521912e7cfd01db351e2e97d5"
+
+[memory]
+user_ram_size   = 0x01800000   # 24 MiB ab 0x08800000
+host_stack_size = 0x00100000   # 1 MiB Host-Stack je PSP-Thread
+
+[recompiler]
+safepoints         = true
+functions_per_file = 500
+
+[runtime]
+vblank_hz = 59.94
+exe_name  = "diva1st"
+
+# Statische C++-Initialisierer: Der Compiler (Metrowerks) legt diesen Code in den Datenbereich, direkt vor die
+# Tabelle der Initialisierer (11 Zeiger ab 0x08B778BC). Ohne diesen Bereich bricht der Start mit
+# "unknown target 0x08B73BA8" ab. Der Recompiler warnt, wenn Zeiger auf weiteren solchen Code zeigen.
+[[code_range]]
+start  = 0x08B73BA8
+end    = 0x08B778BC
+reason = "statische Initialisierer im Datenbereich"
+
+# C++-Ausnahmebehandlung des Metrowerks-Laufzeitsystems: Die Funktion stellt die gesicherten Register und sp
+# wieder her und springt mitten in eine Funktion (catch-Block). Das lässt sich nicht als C-Funktion übersetzen.
+# Im normalen Spielbetrieb wird sie nicht erreicht; falls doch, meldet die Runtime es klar (Exit-Code 75).
+[[hook]]
+addr   = 0x08806984
+symbol = "psp_rt_cxx_exception_resume"
+reason = "Sprung in einen catch-Block mit wiederhergestelltem Stack, nicht als C-Funktion übersetzbar"

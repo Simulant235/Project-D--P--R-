@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.1.2-alpha.1]
+
+- Japanische Originalfassung von 1st (ohne Fan-Patch) wird jetzt erkannt und gebaut
+
 ## [0.1.1-alpha.1]
 
 - Setup: Sprache oben rechts wählbar (DE/EN), gilt auch gleich für Launcher und Spiel
