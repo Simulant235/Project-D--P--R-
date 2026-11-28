@@ -315,7 +315,7 @@ class Pool {
 public:
     Pool() {
         n_ = std::clamp((int)std::thread::hardware_concurrency() - 2, 1, 8);
-        for (int i = 1; i < n_; i++) workers_.emplace_back([this, i] { loop(i); });
+        for (int i = 1; i < n_; i++) std::thread([this, i] { loop(i); }).detach();
     }
     int size() const { return n_; }
     void run(const std::function<void(int)>& job) {
@@ -348,7 +348,6 @@ private:
         }
     }
     int n_;
-    std::vector<std::thread> workers_;
     std::mutex m_;
     std::condition_variable cv_, done_;
     const std::function<void(int)>* job_ = nullptr;

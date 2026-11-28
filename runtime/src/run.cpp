@@ -140,7 +140,8 @@ int run(int argc, char** argv) {
     scheduler_run();
     psp_log(PSP_LOG_INFO, "BOOT", "exit code %d", exit_code());
     log_shutdown();
-    return exit_code();
+    fflush(nullptr);
+    _exit(exit_code());
 }
 
 } // namespace rt

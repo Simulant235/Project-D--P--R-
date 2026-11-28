@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1-alpha.1]
+
+- Absturz beim Schließen des Spiels behoben (Raster-Threads beim Beenden)
+- Fehlerbericht: optionale Beschreibung, ohne Benutzernamen in Pfaden, mit Absturzcode, vorherigem Log und erkannter Fassung, bleibt unter 10 MB
+
 ## [0.2.0-alpha.1]
 
 - Einstellungen aufgebaut wie im Hauptprojekt: Renderer, Auflösung, Bilder pro Sekunde und xBRZ schon sichtbar, aber noch "(bald)"

@@ -281,6 +281,7 @@ HFONT g_font, g_font_big, g_font_tile;
 std::atomic<bool> g_busy{false};
 std::atomic<bool> g_unknown_ok{false};   // Bastler-Schalter, gilt für den laufenden Bau
 HWND g_ck_unknown;
+std::wstring g_built_toml[3];   // vom Bau-Thread, gelesen in WM_BUILD_DONE
 const UINT WM_STATUS = WM_APP + 1, WM_BUILD_DONE = WM_APP + 2, WM_GAME_FAILED = WM_APP + 3, WM_UPDATE_FOUND = WM_APP + 4,
            WM_UPDATE_DONE = WM_APP + 5, WM_GAME_CRASHED = WM_APP + 6;
 
@@ -542,6 +543,7 @@ std::wstring build_game(int gi, const fs::path& src_iso) {
         if (run_logged(q(L.recomp) + L" --game " + q(c) + L" --eboot " + q(eboot) + L" --check-only", work, log) == 0) { toml = c; break; }
     const bool unknown = toml.empty() && g_unknown_ok;   // auf eigenes Risiko: mit der Standard-Konfiguration
     if (unknown) toml = game_tomls(gi)[0];
+    if (!toml.empty()) g_built_toml[gi] = toml.filename().wstring() + (unknown ? T(L" (unbekannte Fassung)", L" (unknown version)") : L"");
     if (toml.empty())
         return T(L"Diese Fassung des Spiels wird noch nicht unterstützt (unbekanntes Programm, z.B. andere Version oder anderer Patch).",
                  L"This version of the game is not supported yet (unknown program, e.g. a different version or patch).") + see_log;
@@ -687,6 +689,8 @@ void play(int gi) {
         return;
     }
     write_default_settings();
+    const fs::path runlog = L.data / L"work" / (std::wstring(GAMES[gi].key) + L"-run.log");
+    fs::rename(runlog, fs::path(runlog).replace_extension(L".prev.log"), ec);   // Absturz von vorhin nicht überschreiben
     std::wstring cl = q(game_exe(gi)) + L" --iso " + q(iso) + L" --settings " + q(settings_path()) + L" --save-dir " + q(L.saves) + L" --log " +
                       q(L.data / L"work" / (std::wstring(GAMES[gi].key) + L"-run.log"));
     if (!alpha_test_mode().empty()) cl += L" --alpha-test " + alpha_test_mode();   // Testszenario
@@ -711,10 +715,18 @@ void play(int gi) {
         return;
     }
     CloseHandle(pi.hThread);
-    std::thread([proc = pi.hProcess, outp] {
+    std::thread([proc = pi.hProcess, outp, exitp = L.data / L"work" / (std::wstring(GAMES[gi].key) + L"-exit.txt")] {
         DWORD code = 0;
         const bool early = WaitForSingleObject(proc, 5000) == WAIT_OBJECT_0;
         if (!early) WaitForSingleObject(proc, INFINITE);   // Kreuz/Alt+F4 = 0
+        if (GetExitCodeProcess(proc, &code)) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            char b[160];
+            snprintf(b, sizeof b, "Letztes Spielende: %02d.%02d.%04d %02d:%02d:%02d, Code 0x%08X (%s)\r\n", st.wDay, st.wMonth, st.wYear,
+                     st.wHour, st.wMinute, st.wSecond, (unsigned)code, code == 0 ? "normal" : "Fehler/Absturz");
+            std::ofstream(exitp, std::ios::binary) << b;
+        }
         if (!early && GetExitCodeProcess(proc, &code) && code != 0) PostMessageW(g_wnd, WM_GAME_CRASHED, code, 0);
         else if (early && GetExitCodeProcess(proc, &code) && code != 0 && code != 60) {
             std::ifstream f(outp);
@@ -776,7 +788,8 @@ std::string system_info() {
          L", DPI " + std::to_wstring(GetDpiForWindow(g_wnd ? g_wnd : GetDesktopWindow())) + L"\r\n";
     t += L"Sprache: " + std::wstring(g_en ? L"en" : L"de") + L", Windows-Sprache " + std::to_wstring(GetUserDefaultUILanguage()) + L"\r\n";
     for (int i = 0; i < 3; i++)
-        if (game_ready(i)) t += std::wstring(GAMES[i].title) + L": gebaut mit " + g_state[std::wstring(L"built_") + GAMES[i].key] + L"\r\n";
+        if (game_ready(i)) t += std::wstring(GAMES[i].title) + L": gebaut mit " + g_state[std::wstring(L"built_") + GAMES[i].key] + L", Fassung " +
+                              g_state[std::wstring(L"toml_") + GAMES[i].key] + L"\r\n";
     const alpha::Result ar = alpha::check(nullptr, 1500);
     t += L"Alpha: Zustand " + std::to_wstring((int)ar.state) + L", Ablauf " + std::to_wstring(ar.expires) + L", Zeitserver " +
          std::to_wstring(ar.real) + L", PC-Uhr " + std::to_wstring(ar.local) + L"\r\n";
@@ -794,14 +807,114 @@ void copy_tail(const fs::path& from, const fs::path& to, uintmax_t max) {
     std::vector<char> b((size_t)max);
     in.read(b.data(), (std::streamsize)b.size());
     std::ofstream out(to, std::ios::binary);
-    const std::string head = "[... gekürzt, nur die letzten " + std::to_string(max >> 20) + " MB ...]\n";
+    const std::string head = "[... gekürzt, nur die letzten " + std::to_string(max >> 10) + " KB ...]\n";
     out.write(head.data(), (std::streamsize)head.size());
     out.write(b.data(), in.gcount());
 }
 
 // ---------------------------------------------------------------- Fehler melden
-// Logs, Einstellungen, PC-Infos als ZIP auf den Desktop
+// optionale Beschreibung
+HWND g_note_edit;
+std::wstring g_note;
+bool g_note_done;
+
+LRESULT CALLBACK note_proc(HWND w, UINT um, WPARAM wp, LPARAM lp) {
+    switch (um) {
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+            const int n = GetWindowTextLengthW(g_note_edit);
+            g_note.assign(n, L'\0');
+            if (n) GetWindowTextW(g_note_edit, g_note.data(), n + 1);
+            DestroyWindow(w);
+        }
+        return 0;
+    case WM_CTLCOLOREDIT:
+        SetTextColor((HDC)wp, g_fg);
+        SetBkColor((HDC)wp, g_bg);
+        return (LRESULT)g_bg_brush;
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+        SetBkMode((HDC)wp, TRANSPARENT);
+        SetTextColor((HDC)wp, g_fg);
+        return (LRESULT)g_bg_brush;
+    case WM_ERASEBKGND: {
+        RECT rc;
+        GetClientRect(w, &rc);
+        FillRect((HDC)wp, &rc, g_bg_brush);
+        return 1;
+    }
+    case WM_CLOSE: DestroyWindow(w); return 0;
+    case WM_DESTROY: g_note_done = true; return 0;
+    }
+    return DefWindowProcW(w, um, wp, lp);
+}
+
+std::wstring note_dialog() {
+    static bool reg = false;
+    if (!reg) {
+        WNDCLASSW wc = {};
+        wc.lpfnWndProc = note_proc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"DivaNote";
+        RegisterClassW(&wc);
+        reg = true;
+    }
+    g_note.clear();
+    g_note_done = false;
+    const DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    RECT r = {0, 0, 520, 270};
+    AdjustWindowRect(&r, style, FALSE);
+    RECT o;
+    GetWindowRect(g_wnd, &o);
+    const int ww = r.right - r.left, wh = r.bottom - r.top;
+    HWND w = CreateWindowExW(WS_EX_DLGMODALFRAME, L"DivaNote", T(L"Fehler melden", L"Report a bug"), style, (o.left + o.right - ww) / 2,
+                             (o.top + o.bottom - wh) / 2, ww, wh, g_wnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    const BOOL dark = g_dark;
+    DwmSetWindowAttribute(w, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof dark);
+    auto ctl = [&](const wchar_t* cls, const wchar_t* text, DWORD st, int x, int y, int cw, int ch, int id) {
+        HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | st, x, y, cw, ch, w, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(c, WM_SETFONT, (WPARAM)g_font, TRUE);
+        return c;
+    };
+    ctl(L"STATIC", T(L"Was hast du gemacht, was ist passiert? (optional)\nDu kannst es auch einfach auf Discord dazuschreiben.",
+                     L"What did you do, what happened? (optional)\nYou can also just write it on Discord."),
+        0, 20, 16, 480, 44, 0);
+    g_note_edit = ctl(L"EDIT", L"", WS_BORDER | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN, 20, 66, 480, 140, 0);
+    HWND ok = ctl(L"BUTTON", T(L"Weiter", L"Continue"), WS_TABSTOP | BS_DEFPUSHBUTTON, 380, 220, 120, 34, IDOK);
+    if (g_dark) {
+        SetWindowTheme(ok, L"DarkMode_Explorer", nullptr);
+        SetWindowTheme(g_note_edit, L"DarkMode_Explorer", nullptr);
+    }
+    EnableWindow(g_wnd, FALSE);
+    ShowWindow(w, SW_SHOW);
+    SetFocus(g_note_edit);
+    MSG m;
+    while (!g_note_done) {
+        if (GetMessageW(&m, nullptr, 0, 0) <= 0) { PostQuitMessage((int)m.wParam); break; }
+        if (!IsDialogMessageW(w, &m)) { TranslateMessage(&m); DispatchMessageW(&m); }
+    }
+    EnableWindow(g_wnd, TRUE);
+    SetForegroundWindow(g_wnd);
+    return g_note;
+}
+
+// C:\Users\<Name> aus den Dateien des Berichts entfernen
+void strip_user(const fs::path& p) {
+    wchar_t prof[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"USERPROFILE", prof, MAX_PATH)) return;
+    const std::string from = u8(prof);
+    std::ifstream in(p, std::ios::binary);
+    std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    bool hit = false;
+    for (size_t pos = 0; (pos = s.find(from, pos)) != std::string::npos; pos += 13, hit = true) s.replace(pos, from.size(), "%USERPROFILE%");
+    if (hit) std::ofstream(p, std::ios::binary) << s;
+}
+
+// Logs, Einstellungen, PC-Infos als ZIP auf den Desktop (unter 10 MB für Discord)
 void report_bug() {
+    const std::wstring note = note_dialog();
     SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32514)));   // Sanduhr
     std::error_code ec;
     SYSTEMTIME st;
@@ -810,19 +923,32 @@ void report_bug() {
     swprintf(stamp, 32, L"%04d%02d%02d-%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     const std::wstring name = std::wstring(T(L"DIVA-Fehlerbericht-", L"DIVA-bug-report-")) + stamp;
     const fs::path tmp = L.data / L"work" / L"report";   // temporär
-    fs::remove_all(tmp, ec);
-    fs::create_directories(tmp / L"files", ec);
-    for (auto& e : fs::directory_iterator(L.data / L"work", ec)) {
-        const std::wstring ext = e.path().extension().wstring();
-        if (e.is_regular_file(ec) && (ext == L".log" || ext == L".txt")) copy_tail(e.path(), tmp / L"files" / e.path().filename(), 20u << 20);
+    const std::string sys = system_info();
+    int rc = -1;
+    for (uintmax_t cap : {3u << 20, 1u << 20, 256u << 10}) {   // je Log; kleiner, bis die ZIP unter 9.5 MB ist
+        fs::remove_all(tmp, ec);
+        fs::create_directories(tmp / L"files", ec);
+        for (auto& e : fs::directory_iterator(L.data / L"work", ec)) {
+            const std::wstring ext = e.path().extension().wstring();
+            if (e.is_regular_file(ec) && (ext == L".log" || ext == L".txt")) copy_tail(e.path(), tmp / L"files" / e.path().filename(), cap);
+        }
+        for (const wchar_t* n : {L"settings.ini", L"launcher.ini"})
+            if (fs::exists(L.cfg / n, ec)) fs::copy_file(L.cfg / n, tmp / L"files" / n, fs::copy_options::overwrite_existing, ec);
+        std::ofstream(tmp / L"files" / L"system.txt", std::ios::binary) << sys;
+        if (!note.empty()) std::ofstream(tmp / L"files" / T(L"beschreibung.txt", L"description.txt"), std::ios::binary) << u8(note);
+        uintmax_t total = 0;
+        for (auto& e : fs::directory_iterator(tmp / L"files", ec)) total += e.file_size(ec);
+        if (total > (10u << 20))   // zu groß: Log der vorherigen Runde weglassen
+            for (auto& e : fs::directory_iterator(L.data / L"work", ec))
+                if (e.path().filename().wstring().ends_with(L".prev.log")) fs::remove(tmp / L"files" / e.path().filename(), ec);
+        std::wstring names;
+        for (auto& e : fs::directory_iterator(tmp / L"files", ec)) {
+            strip_user(e.path());
+            names += L" " + q(e.path().filename().wstring());
+        }
+        rc = run_hidden(q(tar_exe()) + L" -a -c -f report.zip -C files" + names, tmp, 120000);
+        if (rc != 0 || fs::file_size(tmp / L"report.zip", ec) < 9500000) break;
     }
-    for (const wchar_t* n : {L"settings.ini", L"launcher.ini"})
-        if (fs::exists(L.cfg / n, ec)) fs::copy_file(L.cfg / n, tmp / L"files" / n, fs::copy_options::overwrite_existing, ec);
-    std::ofstream(tmp / L"files" / L"system.txt", std::ios::binary) << system_info();
-    // packen, dann auf den Desktop
-    std::wstring names;
-    for (auto& e : fs::directory_iterator(tmp / L"files", ec)) names += L" " + q(e.path().filename().wstring());
-    const int rc = run_hidden(q(tar_exe()) + L" -a -c -f report.zip -C files" + names, tmp, 120000);
     fs::path out = known_folder(FOLDERID_Desktop) / (name + L".zip");
     if (rc == 0 && fs::exists(tmp / L"report.zip", ec)) {
         fs::copy_file(tmp / L"report.zip", out, fs::copy_options::overwrite_existing, ec);
@@ -837,10 +963,11 @@ void report_bug() {
     const std::wstring to = *REPORT_TO ? std::wstring(REPORT_TO) : std::wstring(T(L"(wird beim Alpha-Start bekannt gegeben)", L"(will be announced when the alpha starts)"));
     msg(T(L"Fehlerbericht gespeichert:\n", L"Bug report saved:\n") + out.wstring() +
             T(L"\n\nBitte schick diese Datei an: ", L"\n\nPlease send this file to: ") + to +
-            T(L"\n\nSchreib kurz dazu: Was hast du gemacht, was ist passiert, und was hättest du erwartet? "
-              L"Der Bericht enthält Logs, Einstellungen und Infos zu deinem PC (Windows, CPU, Grafikkarte), keine Spieldateien.",
-              L"\n\nPlease add a short note: what did you do, what happened, and what did you expect? "
-              L"The report contains logs, settings and info about your PC (Windows, CPU, graphics card), no game files."),
+            (note.empty() ? std::wstring(T(L"\n\nSchreib kurz dazu: Was hast du gemacht, was ist passiert, und was hättest du erwartet?",
+                                           L"\n\nPlease add a short note: what did you do, what happened, and what did you expect?"))
+                          : std::wstring()) +
+            T(L"\n\nDer Bericht enthält Logs, Einstellungen und Infos zu deinem PC (Windows, CPU, Grafikkarte), keine Spieldateien und keinen Benutzernamen.",
+              L"\n\nThe report contains logs, settings and info about your PC (Windows, CPU, graphics card), no game files and no user name."),
         T(L"Fehler melden", L"Report a bug"), IDI_SUCCESS);
     const std::wstring sel = L"/select,\"" + out.wstring() + L"\"";
     ShellExecuteW(g_wnd, L"open", L"explorer.exe", sel.c_str(), nullptr, SW_SHOWNORMAL);
@@ -1920,6 +2047,7 @@ LRESULT CALLBACK wnd_proc(HWND w, UINT um, WPARAM wp, LPARAM lp) {
         refresh_tiles();
         if (err->empty()) {
             g_state[std::wstring(L"built_") + GAMES[wp].key] = VERSION;   // für Neubau nach Update
+            g_state[std::wstring(L"toml_") + GAMES[wp].key] = g_built_toml[wp];
             save_state();
             SetWindowTextW(g_status, (std::wstring(GAMES[wp].title) + T(L" ist installiert. Prüfe kurz die Einstellungen, dann \"Spielen\".",
                                                                       L" is installed. Check the settings, then \"Play\".")).c_str());
